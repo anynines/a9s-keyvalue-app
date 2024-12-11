@@ -1,8 +1,7 @@
-module github.com/anynines/a9s-redis-app
+module github.com/anynines/a9s-keyvalue-app
 
-go 1.15
+go 1.23
 
-require (
-	github.com/go-redis/redis v6.4.2-0.20170602131943-f29951c8990f+incompatible
-	github.com/onsi/gomega v1.14.0 // indirect
-)
+require github.com/valkey-io/valkey-go v1.0.51
+
+require golang.org/x/sys v0.28.0 // indirect

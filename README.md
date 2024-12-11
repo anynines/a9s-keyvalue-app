@@ -1,59 +1,64 @@
-# a9s Redis App
+# a9s KeyValue App
 
-This is a sample app to check whether the a9s Redis service is working or not.
+This is a sample app to check whether the a9s KeyValue Service is working or not.
 
 ## Install, Push and Bind
 
-Make sure you installed GO on your machine, [download this](https://golang.org/doc/install?download=go1.8.darwin-amd64.pkg) for mac.
+Make sure you installed Go on your machine, [download this](https://go.dev/dl/go1.23.4.darwin-amd64.pkg) for macOS.
 
-Download the application
-```
-$ go get github.com/anynines/a9s-redis-app
-$ cd $GOPATH/src/github.com/anynines/a9s-redis-app
-```
+Download the application:
 
-Create a service on the [a9s PaaS](https://paas.anynines.com)
-```
-$ cf create-service a9s-redis40 redis-single-non-persistent-small myredis
+```shell
+go get github.com/anynines/a9s-keyvalue-app
+cd $GOPATH/src/github.com/anynines/a9s-keyvalue-app
 ```
 
-Push the app
-```
-$ cf push --no-start
+Create a service on the [a9s PaaS](https://paas.anynines.com):
+
+```shell
+cf create-service a9s-keyvalue keyvalue8-single-ssl my-keyvalue-service
 ```
 
-Bind the app
-```
-$ cf bind-service redis-app myredis
+Push the app:
+
+```shell
+cf push --no-start
 ```
 
-And start
-```
-$ cf start redis-app
+Bind the app:
+
+```shell
+cf bind-service keyvalue-app my-keyvalue-service
 ```
 
-At last check the created url...
+And start:
 
+```shell
+cf start keyvalue-app
+```
+
+At last, check the created url...
 
 ## Local Test
 
-Start Redis service with Docker:
+Start Valkey service with Docker:
 
 ```shell
-$ docker run -d -p 6379:6379 redis redis-server --requirepass secret
+docker run -d -p 6379:6379 valkey/valkey valkey-server --requirepass secret
 ```
 
 Export a few environment variables and run the sample app:
 
 ```shell
-$ export REDIS_HOST=localhost
-$ export REDIS_PORT=6379
-$ export REDIS_PASSWORD=secret
-$ export APP_DIR=$PWD
-$ go build
-$ ./a9s-redis-app
+export VALKEY_HOST=localhost
+export VALKEY_PORT=6379
+export VALKEY_PASSWORD=secret
+export VALKEY_USERNAME=default
+export APP_DIR=$PWD
+go build
+./a9s-keyvalue-app
 ```
 
 ## Remark
 
-To bind the app to other Redis services than `a9s-redis50`, have a look at the `VCAPServices` struct.
+To bind the app to other KeyValue services than `a9s-keyvalue`, have a look at the `VCAPServices` struct.

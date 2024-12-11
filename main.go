@@ -1,6 +1,9 @@
 package main
 
 import (
+	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -11,21 +14,26 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/go-redis/redis"
+	"github.com/valkey-io/valkey-go"
 )
 
-type RedisCredentials struct {
-	Host     string `json:"host"`
+type ValkeyDetails struct {
 	Password string `json:"password"`
 	Port     int    `json:"port"`
+	Username string `json:"username"`
 }
 
-// struct for reading env
-type VCAPServices struct {
-	Redis []struct {
-		Credentials RedisCredentials `json:"credentials"`
-	} `json:"a9s-redis50"`
+type ValkeyCredentials struct {
+	Host          string        `json:"host"`
+	CaCertificate *string       `json:"cacrt"`
+	Valkey        ValkeyDetails `json:"valkey"`
 }
+
+type ServiceInstance struct {
+	Credentials ValkeyCredentials `json:"credentials"`
+}
+
+type VcapServices map[string][]ServiceInstance
 
 type KeyValue struct {
 	Key   string
@@ -44,78 +52,109 @@ func initTemplates() {
 	templates["new"] = template.Must(template.ParseFiles("templates/new.html", "templates/base.html"))
 }
 
-func createCredentials() (RedisCredentials, error) {
-	// Kubernetes
+func createCredentials() (ValkeyCredentials, error) {
+	// Local
 	if os.Getenv("VCAP_SERVICES") == "" {
-		host := os.Getenv("REDIS_HOST")
+		host := os.Getenv("VALKEY_HOST")
 		if len(host) < 1 {
-			err := fmt.Errorf("Environment variable REDIS_HOST missing.")
+			err := fmt.Errorf("environment variable VALKEY_HOST not set")
 			log.Println(err)
-			return RedisCredentials{}, err
+			return ValkeyCredentials{}, err
 		}
 
-		password := os.Getenv("REDIS_PASSWORD")
+		password := os.Getenv("VALKEY_PASSWORD")
 		if len(password) < 1 {
-			err := fmt.Errorf("Environment variable REDIS_PASSWORD missing.")
+			err := fmt.Errorf("environment variable VALKEY_PASSWORD not set")
 			log.Println(err)
-			return RedisCredentials{}, err
+			return ValkeyCredentials{}, err
 		}
-		portStr := os.Getenv("REDIS_PORT")
-		if len(portStr) < 1 {
-			err := fmt.Errorf("Environment variable REDIS_PORT missing.")
+
+		username := os.Getenv("VALKEY_USERNAME")
+		if len(username) < 1 {
+			err := fmt.Errorf("environment variable VALKEY_USERNAME not set")
 			log.Println(err)
-			return RedisCredentials{}, err
+			return ValkeyCredentials{}, err
+		}
+
+		portStr := os.Getenv("VALKEY_PORT")
+		if len(portStr) < 1 {
+			err := fmt.Errorf("environment variable VALKEY_PORT not set")
+			log.Println(err)
+			return ValkeyCredentials{}, err
 		}
 
 		port, err := strconv.Atoi(portStr)
 		if err != nil {
 			log.Println(err)
-			return RedisCredentials{}, err
+			return ValkeyCredentials{}, err
 		}
 
-		credentials := RedisCredentials{
-			Host:     host,
-			Password: password,
-			Port:     port,
+		credentials := ValkeyCredentials{
+			Host: host,
+			Valkey: ValkeyDetails{
+				Password: password,
+				Port:     port,
+				Username: username,
+			},
 		}
 		return credentials, nil
 	}
 
 	// Cloud Foundry
 	// no new read of the env var, the reason is the receiver loop
-	var s VCAPServices
-	err := json.Unmarshal([]byte(os.Getenv("VCAP_SERVICES")), &s)
+	var vcapServices VcapServices
+	err := json.Unmarshal([]byte(os.Getenv("VCAP_SERVICES")), &vcapServices)
 	if err != nil {
 		log.Println(err)
-		return RedisCredentials{}, err
+		return ValkeyCredentials{}, err
 	}
 
-	return s.Redis[0].Credentials, nil
+	for _, instances := range vcapServices {
+		for _, instance := range instances {
+			return instance.Credentials, nil
+		}
+	}
+
+	err = fmt.Errorf("no valid services found in VCAP_SERVICES")
+	log.Println(err)
+	return ValkeyCredentials{}, err
 }
 
 func renderTemplate(w http.ResponseWriter, name string, template string, viewModel interface{}) {
-	tmpl, _ := templates[name]
+	tmpl := templates[name]
 	err := tmpl.ExecuteTemplate(w, template, viewModel)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
 
-func NewClient() (*redis.Client, error) {
+func NewClient() (valkey.Client, error) {
 	credentials, err := createCredentials()
 	if err != nil {
 		return nil, err
 	}
 	log.Printf("Connection to:\n%v\n", credentials)
 
-	client := redis.NewClient(&redis.Options{
-		Addr:     fmt.Sprintf("%v:%v", credentials.Host, credentials.Port),
-		Password: credentials.Password,
-		DB:       0, // use default DB
-	})
+	clientOptions := valkey.ClientOption{
+		InitAddress: []string{fmt.Sprintf("%v:%v", credentials.Host, credentials.Valkey.Port)},
+		Username:    credentials.Valkey.Username,
+		Password:    credentials.Valkey.Password,
+		SelectDB:    0,
+	}
 
-	pong, err := client.Ping().Result()
-	log.Printf("pong: %v ; err = %v\n", pong, err)
+	if credentials.CaCertificate != nil {
+		rootCaPool := x509.NewCertPool()
+		ok := rootCaPool.AppendCertsFromPEM([]byte(*credentials.CaCertificate))
+		if !ok {
+			return nil, fmt.Errorf("failed to create root CA pool using `cacrt`")
+		}
+		clientOptions.TLSConfig = &tls.Config{
+			RootCAs:    rootCaPool,
+			ServerName: credentials.Host,
+		}
+	}
+
+	client, err := valkey.NewClient(clientOptions)
 
 	return client, err
 }
@@ -126,7 +165,7 @@ func createKeyValue(w http.ResponseWriter, r *http.Request) {
 	key := r.PostFormValue("key")
 	value := r.PostFormValue("value")
 
-	http.Redirect(w, r, "/", 302)
+	http.Redirect(w, r, "/", http.StatusFound)
 
 	// insert key value into service
 	client, err := NewClient()
@@ -134,7 +173,10 @@ func createKeyValue(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Failed to create connection: %v", err)
 		return
 	}
-	err = client.Set(key, value, 0).Err()
+	defer client.Close()
+
+	ctx := context.Background()
+	err = client.Do(ctx, client.B().Set().Key(key).Value(value).Build()).Error()
 	if err != nil {
 		log.Printf("Failed to set key %v and value %v ; err = %v", key, value, err)
 		return
@@ -148,23 +190,33 @@ func newKeyValue(w http.ResponseWriter, r *http.Request) {
 func renderKeyValues(w http.ResponseWriter, r *http.Request) {
 	keyStore := make([]KeyValue, 0)
 
+	credentials, err := createCredentials()
+	if err != nil {
+		return
+	}
+	log.Printf("Connection to:\n%v\n", credentials)
+
 	client, err := NewClient()
 	if err != nil {
-		log.Printf("Failed to create connection: %v\n", err)
-	} else {
-		log.Printf("Collecting keys.\n")
-		// collect keys
-		keys, err := client.Keys("*").Result()
+		log.Printf("Failed to create connection: %v", err)
+		return
+	}
+	defer client.Close()
+
+	ctx := context.Background()
+	log.Printf("Collecting keys.\n")
+	// collect keys
+	keys, err := client.Do(ctx, client.B().Keys().Pattern("*").Build()).AsStrSlice()
+	if err != nil {
+		log.Printf("Failed to fetch keys, err = %v\n", err)
+		return
+	}
+	for _, key := range keys {
+		value, err := client.Do(ctx, client.B().Get().Key(key).Build()).ToString()
 		if err != nil {
-			log.Printf("Failed to fetch keys, err = %v\n", err)
-		}
-		for _, key := range keys {
-			value, err := client.Get(key).Result()
-			if err != nil {
-				log.Printf("Failed to fetch value for key %v, err = %v\n", key, err)
-			} else {
-				keyStore = append(keyStore, KeyValue{Key: key, Value: value})
-			}
+			log.Printf("Failed to fetch value for key %v, err = %v\n", key, err)
+		} else {
+			keyStore = append(keyStore, KeyValue{Key: key, Value: value})
 		}
 	}
 
@@ -180,9 +232,11 @@ func main() {
 	}
 
 	// https://docs.cloudfoundry.org/devguide/deploy-apps/environment-variable.html#-home
+	var dir string
+	var err error
 	appPath := os.Getenv("HOME")
 
-	dir, err := filepath.Abs(appPath)
+	dir, _ = filepath.Abs(appPath)
 	if os.Getenv("VCAP_SERVICES") == "" {
 		dir, err = filepath.Abs("/app")
 		if err != nil {
